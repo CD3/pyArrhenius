@@ -1,0 +1,27 @@
+file_data =  %data_filename%
+
+TvstFormat = ASCII
+outputTvst = 1
+
+damageSearch = 1
+
+DamageIntegral = ArrheniusIntegral
+A = 3.1e99
+Ea = 6.28e5
+
+tolerance = 0.01
+max_iterations = 100
+
+offsetTemp    = 308.15
+
+duration     = %duration%
+tMax         = $(5*float({duration}))
+dtmax        = $( 1e-3 )
+dtdur        = $( float({duration})/20) )
+dt           = $( min({dtmax},{dtdur}) )
+
+
+number_pulses = 1
+pulse_period  = 1000
+pulse_width  = 100
+wavelength   = 532

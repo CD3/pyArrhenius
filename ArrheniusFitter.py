@@ -65,7 +65,7 @@ def ComputeScalingFactors(files,Tbs,Ea,A):
     x0 = None
     while x0 is None and min < 5e10:
       try:
-        f = lambda x : mp.log(A*ArrheniusIntegral(t,x*dT+T0,1,Ea))
+        f = lambda x : mp.log(ArrheniusIntegral(t,x*dT+T0,A,Ea))
         x0,r = brentq( f, min, max, full_output=True)
       except ValueError as e:
         min = max
@@ -124,8 +124,8 @@ def LinearRegressionMethod(config):
 
   m,b,r,p,err = linregress(x,y)
 
-  Ea = np.float64(R*m)
-  A = np.float64(mp.exp(-b))
+  Ea = mp.mpmathify(R*m)
+  A = mp.exp(-b)
 
   return A,Ea
 
@@ -153,8 +153,8 @@ def EffectiveExposureMethod(config):
     
   m,b,r,p,err = linregress(x,y)
 
-  Ea = R*m
-  A = np.float64(mp.exp(-b))
+  Ea = mp.mpmathify(R*m)
+  A = mp.exp(-b)
 
   return A,Ea
 
@@ -192,10 +192,10 @@ def AverageLineIntersectionMethod(config):
   xavg = xsum/len(intersections)
   yavg = ysum/len(intersections)
 
-  Ea = xavg
+  Ea = mp.mpmathify(xavg)
   # log(A) = yavg
   # A = exp(yavg)
-  A  = np.float64(mp.exp(yavg))
+  A  = mp.exp(yavg)
 
   return A,Ea
 
