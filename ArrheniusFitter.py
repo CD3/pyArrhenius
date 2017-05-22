@@ -4,11 +4,11 @@ import argparse, sys
 import numpy as np
 import mpmath  as mp
 from scipy.stats import linregress
-from scipy.optimize import brentq,minimize_scalar
+from scipy.optimize import brentq,minimize,minimize_scalar
 import matplotlib.pyplot as plt
 import pint
 
-from ArrheniusIntegral import ArrheniusIntegral,LoadThermalProfile
+from ArrheniusIntegral import ArrheniusIntegral,LoadThermalProfile,ComputeThreshold
 
 np.seterr(all='raise')
 
@@ -52,32 +52,18 @@ def ComputeLogA(t,T,Ea):
     return float('inf')
   return -mp.log(sum)
 
-def ComputeScalingFactors(files,Tbs,Ea,A):
+def ComputeScalingFactors(files,Tbs,A,Ea):
   SFs = dict()
   for file in files:
     Tb = Tbs[file] if isinstance(Tbs,dict) else Tbs
     t,T = LoadThermalProfile( file, Tb )
-    T0 = T[0]
-    dT = T - T0
-
-    min = 0
-    max = 5
-    x0 = None
-    while x0 is None and min < 5e10:
-      try:
-        f = lambda x : mp.log(ArrheniusIntegral(t,x*dT+T0,A,Ea))
-        x0,r = brentq( f, min, max, full_output=True)
-      except ValueError as e:
-        min = max
-        max *= 100
-        pass
-
-    SFs[file] = x0 if x0 is not None else max
+    SFs[file] = ComputeThreshold(t,T,A,Ea)
+    
 
   return SFs
 
-def ComputeScalingFactorsRSquared(files,Tbs,Ea,A):
-  SFs = ComputeScalingFactors(files,Tbs,Ea,A)
+def ComputeScalingFactorsRSquared(files,Tbs,A,Ea):
+  SFs = ComputeScalingFactors(files,Tbs,A,Ea)
   sum = 0
   for f in SFs:
     sum += (SFs[f] - 1)**2
@@ -216,7 +202,6 @@ def MinimizeLogAStdDevMethod(config):
   return A,Ea
 
 def MinimizeLogAStdDevAndScalingFactorsMethod(config):
-  # use log(A) minimization to get value for Ea
   A,Ea = MinimizeLogAStdDevMethod(config)
   # now find the value for log(A) that minimizes the scaling factor err
   regressions = dict()
@@ -224,16 +209,16 @@ def MinimizeLogAStdDevAndScalingFactorsMethod(config):
     t,T = LoadThermalProfile( file, config.baseline_temperature )
     regressions[file] = ComputeLogAvsEaLine(t,T,[config.Ea_min,config.Ea_max])
   logAs = [regressions[f]['m']*Ea + regressions[f]['b'] for f in config.files]
-  def f(logA):
-    err = ComputeScalingFactorsRSquared(config.files, config.baseline_temperature, Ea, mp.exp(logA) )
+  def cost(logA):
+    err = ComputeScalingFactorsRSquared(config.files, config.baseline_temperature, mp.exp(logA), Ea )
     return err
-  res = minimize_scalar( f, bounds=(min(logAs),max(logAs)), method='bounded' )
+  res = minimize_scalar( cost, bounds=(min(logAs),max(logAs)), method='bounded' )
   logA = res.x
 
   A = mp.exp(logA)
   return A,Ea
 
-def MinimizeScalingFactorsMethod(config):
+def ScanForMinimumScalingFactorsMethod(config):
   regressions = dict()
   for file in config.files:
     t,T = LoadThermalProfile( file, config.baseline_temperature )
@@ -255,11 +240,11 @@ def MinimizeScalingFactorsMethod(config):
       ys.append(m*x+b)
 
     def f(logA):
-      err = ComputeScalingFactorsRSquared(config.files, config.baseline_temperature, x, mp.exp(logA) )
+      err = ComputeScalingFactorsRSquared(config.files, config.baseline_temperature, mp.exp(logA), x )
       return err
     res = minimize_scalar( f, bounds=(min(ys),max(ys)), method='bounded' )
     y = res.x
-    e = ComputeScalingFactorsRSquared(config.files, config.baseline_temperature, x, mp.exp(logA) )
+    e = ComputeScalingFactorsRSquared(config.files, config.baseline_temperature, mp.exp(logA), x )
     if err is None or e < err:
       err = e
       Ea = x
@@ -269,43 +254,92 @@ def MinimizeScalingFactorsMethod(config):
 
   return exp(logA),Ea
 
+def MinimizeScalingFactorsMethod(config):
+  regressions = dict()
+  for file in config.files:
+    t,T = LoadThermalProfile( file, config.baseline_temperature )
+    regressions[file] = ComputeLogAvsEaLine(t,T,[config.Ea_min,config.Ea_max])
 
+  def logA_ll(x):
+    return mp.log(x[0]) - min([regressions[f]['m']*x[1] + regressions[f]['b'] for f in config.files])
 
+  def logA_ul(x):
+    return max([regressions[f]['m']*x[1] + regressions[f]['b'] for f in config.files]) - mp.log(x[0])
+
+  def cost(x):
+    err = ComputeScalingFactorsRSquared(config.files, config.baseline_temperature, x[0], x[1] )
+    print ">>>",x,err
+    return err
+
+  x0 = MinimizeLogAStdDevMethod(config)
+
+  bounds = [ (None,None), (config.Ea_min,config.Ea_max) ]
+  constraints = [ { 'type' : 'ineq', 'fun' : logA_ll }
+                , { 'type' : 'ineq', 'fun' : logA_ul } ]
+
+  res = minimize(cost, (x0[0],x0[1]-1e5), bounds=bounds, constraints=constraints,options={'eps':1e5})
+  print res
+  print res.x
+  
 
 
 
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="Find a set of Arrhenius coefficients (A and Ea) that best fit a given set of threshold thermal profiles.")
-  parser.add_argument("--Ea-min", type=np.float64, default=1e4, help="minimum Ea value to compute.")
-  parser.add_argument("--Ea-max", type=np.float64, default=1e8, help="maximum Ea value to compute.")
-  parser.add_argument("--baseline-temperature","-T0", type=np.float64, default=310,  help="number of Ea values to compute.")
+  parser.add_argument("--Ea-min", type=np.float64, default=1e3, help="minimum Ea value to consider when searching for the best fit.")
+  parser.add_argument("--Ea-max", type=np.float64, default=1e7, help="maximum Ea value to consider when searching for the best fit.")
+  parser.add_argument("--baseline-temperature","-T0", type=np.float64, default=0,  help="baseline temperature to all to thermal profiles.")
   parser.add_argument("--methods",default='all', help="list of methods to use.")
+  parser.add_argument("--logAvsEa",action='store_true', default=False, help="Calculate logA vs Ea and write it to file..")
+  parser.add_argument("--logAvsEa-N", type=int, default=100, help="the number of points to compute log(A) vs Ea at.")
+  parser.add_argument("--no-fit",action='store_true',default=False, help="Do not perform an A,Ea fit.")
   parser.add_argument("files", metavar="FILE", nargs="*", help="Files containing threshold thermal profile data.")
   args = parser.parse_args() 
 
-  methods = { "constant temperature linear regression" : LinearRegressionMethod
-            , "effective exposure linear regression" : EffectiveExposureMethod
-            , "average line intersection" : AverageLineIntersectionMethod
-            , "minimize log(A) standard deviation" : MinimizeLogAStdDevMethod
-            , "minimize log(A) standard deviation and scaling factors" : MinimizeLogAStdDevAndScalingFactorsMethod
-            # , "minimize scaling factors" : MinimizeScalingFactorsMethod
-            }
+  if args.logAvsEa:
+    N = args.logAvsEa_N
+    for file in args.files:
+      fn = "{file}.logAvsEa.txt".format(file=file)
+      print "Generating {fn}".format(fn=fn)
+      t,T = LoadThermalProfile( file, args.baseline_temperature )
 
-  if args.methods == 'all':
-    args.methods = ','.join(methods.keys())
+      Ea = np.zeros(N,dtype='float64')
+      logA = np.zeros(N,dtype='float64')
+      
+      Eas = np.logspace(np.log10(args.Ea_min), np.log10(args.Ea_max), args.logAvsEa_N)
+      Eas = np.linspace(args.Ea_min, args.Ea_max, num=args.logAvsEa_N)
+      for i in range(len(Eas)):
+        Ea[i] = Eas[i]
+        logA[i] = ComputeLogA(t,T,Eas[i])
+      
+      np.savetxt(fn, zip(Ea,logA))
+        
 
-  for method in args.methods.split(','):
-    print "running",method,"method"
-    A,Ea = methods[method](args)
-    print " A: {0} 1/s".format(mp.nstr(A,3))
-    print "Ea: {0} J/mol".format(mp.nstr(Ea,3))
-    SFs = ComputeScalingFactors(args.files,args.baseline_temperature,Ea,A)
-    err = 0
-    for file in SFs:
-      print "{file}: {threshold}".format(file=file, threshold=SFs[file])
-      err += (SFs[file] - 1)**2
-    print "R^2: {err}".format(err=err)
-    print
+  if not args.no_fit:
+    methods = { "constant temperature linear regression" : LinearRegressionMethod
+              , "effective exposure linear regression" : EffectiveExposureMethod
+              # , "average line intersection" : AverageLineIntersectionMethod
+              , "minimize log(A) standard deviation" : MinimizeLogAStdDevMethod
+              , "minimize log(A) standard deviation and scaling factors" : MinimizeLogAStdDevAndScalingFactorsMethod
+              # , "scan for minimum scaling factors" : ScanForMinimumScalingFactorsMethod
+              # , "minimize scaling factors" : MinimizeScalingFactorsMethod
+              }
+
+    if args.methods == 'all':
+      args.methods = ','.join(methods.keys())
+
+    for method in args.methods.split(','):
+      print "running",method,"method"
+      A,Ea = methods[method](args)
+      print " A: {0} 1/s".format(mp.nstr(A,3))
+      print "Ea: {0} J/mol".format(mp.nstr(Ea,3))
+      SFs = ComputeScalingFactors(args.files,args.baseline_temperature,A,Ea)
+      err = 0
+      for file in SFs:
+        print "{file}: {threshold}".format(file=file, threshold=SFs[file])
+        err += (SFs[file] - 1)**2
+      print "R^2: {err}".format(err=err)
+      print
 
 

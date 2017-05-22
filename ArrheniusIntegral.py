@@ -1,6 +1,7 @@
 #! /usr/bin/python
 import mpmath as mp
 import numpy as np
+from scipy.optimize import brentq,minimize,minimize_scalar
 
 def ArrheniusIntegral(t,T,A,Ea):
   '''
@@ -20,6 +21,26 @@ def ArrheniusIntegral(t,T,A,Ea):
 
   return sum
 
+def ComputeThreshold(t,T,A,Ea):
+  T0 = T[0]
+  dT = T - T0
+
+  min = 0
+  max = 5
+  x0 = None
+  while x0 is None and min < 5e10:
+    try:
+      # f = lambda x : mp.log(ArrheniusIntegral(t,x*dT+T0,A,Ea))
+      f = lambda x : ArrheniusIntegral(t,x*dT+T0,A,Ea) - 1
+      x0,r = brentq( f, min, max, full_output=True)
+    except ValueError as e:
+      min = max
+      max *= 100
+      pass
+
+  return x0 if x0 is not None else max
+
+
 def LoadThermalProfile(file,T0=0.0):
   t,T = np.loadtxt( file, unpack=True, dtype='float64' )
   T = T + T0
@@ -34,9 +55,11 @@ if __name__ == "__main__":
   parser.add_argument("files", metavar="FILE", nargs="*", help="Files containing temperature profile data.")
   args = parser.parse_args() 
 
+  print "filename | Omega | theshold"
   for file in args.files:
     t,T = LoadThermalProfile(file,args.temperature_offset)
     Omega = ArrheniusIntegral(t,T,args.frequency_factor,args.activation_energy)
-    print "{file}: {Omega}".format(file=file,Omega=Omega)
+    thresh = ComputeThreshold(t,T,args.frequency_factor,args.activation_energy)
+    print "{file} | {Omega} | {thresh}".format(file=file,Omega=Omega,thresh=thresh)
 
 
