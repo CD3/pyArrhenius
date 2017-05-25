@@ -319,9 +319,9 @@ if __name__ == "__main__":
   if not args.no_fit:
     methods = { "constant temperature linear regression" : LinearRegressionMethod
               , "effective exposure linear regression" : EffectiveExposureMethod
-              # , "average line intersection" : AverageLineIntersectionMethod
               , "minimize log(A) standard deviation" : MinimizeLogAStdDevMethod
               , "minimize log(A) standard deviation and scaling factors" : MinimizeLogAStdDevAndScalingFactorsMethod
+              # , "average line intersection" : AverageLineIntersectionMethod
               # , "scan for minimum scaling factors" : ScanForMinimumScalingFactorsMethod
               # , "minimize scaling factors" : MinimizeScalingFactorsMethod
               }
