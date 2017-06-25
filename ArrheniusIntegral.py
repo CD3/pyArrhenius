@@ -59,7 +59,7 @@ if __name__ == "__main__":
   parser.add_argument("--temperature-offset","-T0", type=np.float64, default=0,  help="An otfset temperature that will be added to all temperatures before integrating.")
   parser.add_argument("--activation-energy","-Ea", type=np.float64, default=6.28e5,  help="The activation energy to use [J/mol].")
   parser.add_argument("--frequency-factor","-A", type=np.float64, default=3.1e99,  help="The activation energy to use [J/mol].")
-  parser.add_argument("--num-procs","-j", type=int, default=1,  help="Number of processors to use when analyzing multiple files.")
+  parser.add_argument("--num-jobs","-j", type=int, default=1,  help="Number of jobs (processes) to use when analyzing multiple files.")
   parser.add_argument("files", metavar="FILE", nargs="*", help="Files containing temperature profile data.")
   args = parser.parse_args() 
 
