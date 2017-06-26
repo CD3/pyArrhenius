@@ -4,10 +4,10 @@ import numpy as np
 from scipy.optimize import brentq,minimize,minimize_scalar
 import multiprocessing as mproc
 
-def ArrheniusIntegral(t,T,A,Ea):
+def ArrheniusIntegralTrapezoid(t,T,A,Ea):
   '''
   Calculates the Arrhenius integral for a time-dependent temperature profile for a
-  given set of A and Ea coefficients.
+  given set of A and Ea coefficients using the trapezoid method.
 
   @param t [list-like] times (in seconds)
   @param T [list-like] temperatures (in K)
@@ -16,11 +16,49 @@ def ArrheniusIntegral(t,T,A,Ea):
   @return omega [number] the damage parameter (dimensionless)
   '''
   sum = 0
-  for i in range(len(T)-1):
-    sum = sum + (mp.exp( -Ea / (8.314 * T[i])) + mp.exp( -Ea  / (8.314 * T[i+1])))*(t[i+1]-t[i])
+  alpha = -Ea/8.314
+  exp_last = mp.exp( alpha/T[0])
+  N = len(T)
+  for i in range(1,N):
+    exp_now = mp.exp( alpha/T[i])
+    sum = sum + (exp_now + exp_last)*(t[i]-t[i-1])
+    exp_last = exp_now
   sum = A*sum*0.5
 
   return sum
+
+def ArrheniusIntegralLinearTempQuadrature(t,T,A,Ea):
+  '''
+  Calculates the Arrhenius integral for a time-dependent temperature profile for a
+  given set of A and Ea coefficients using a semi-analytical quadrature. Rather
+  than assuming the damge rate is linear between time poitns, it assumes that the temperature
+  is linear between points.
+
+  @param t [list-like] times (in seconds)
+  @param T [list-like] temperatures (in K)
+  @param A [number] frequency factor (in 1/s)
+  @param Ea [number] activation energy (in J/mol)
+  @return omega [number] the damage parameter (dimensionless)
+  '''
+
+
+  sum = 0
+  E2ox_last = mp.expint(2,T[0])/T[0]
+  N = len(T)
+  for i in range(1,N-1):
+    E2ox_now = mp.expint(2,T[i])/T[i]
+    dT = T[i] - T[i-1]
+    if abs(dT) > 0:
+      _1om = (t[i] - t[i-1])/dT
+      sum = sum + _1om * ( E2ox_last - E2ox_now )
+    E2ox_last = E2ox_now
+  sum = sum*A*Ea/8.314
+
+  return sum
+
+
+ArrheniusIntegral = ArrheniusIntegralTrapezoid
+# ArrheniusIntegral = ArrheniusIntegralLinearTempQuadrature
 
 def ComputeThreshold(t,T,A,Ea):
   T0 = T[0]
@@ -63,11 +101,11 @@ if __name__ == "__main__":
   parser.add_argument("files", metavar="FILE", nargs="*", help="Files containing temperature profile data.")
   args = parser.parse_args() 
 
-  pool = mproc.Pool(processes=args.num_procs)
-  output = pool.map(AnalyseFile, args.files)
+  pool = mproc.Pool(processes=args.num_jobs)
 
 
   print "filename | Omega | theshold"
-  print "\n".join(output)
+  for output in pool.imap_unordered(AnalyseFile, args.files):
+    print output
 
 

@@ -5,8 +5,13 @@ import numpy as np
 import mpmath  as mp
 from scipy.stats import linregress
 from scipy.optimize import brentq,minimize,minimize_scalar
-import matplotlib.pyplot as plt
 import pint
+
+try:
+  from pathos.multiprocessing import ProcessingPool as Pool
+  have_pool = 1
+except:
+  have_pool = 0
 
 from ArrheniusIntegral import ArrheniusIntegral,LoadThermalProfile,ComputeThreshold
 
@@ -52,18 +57,22 @@ def ComputeLogA(t,T,Ea):
     return float('inf')
   return -mp.log(sum)
 
-def ComputeScalingFactors(files,Tbs,A,Ea):
+def ComputeScalingFactors(Profiles,Tbs,A,Ea):
   SFs = dict()
-  for file in files:
+  for profile in Profiles:
     Tb = Tbs[file] if isinstance(Tbs,dict) else Tbs
-    t,T = LoadThermalProfile( file, Tb )
-    SFs[file] = ComputeThreshold(t,T,A,Ea)
+    if isinstance( profile, (str, unicode) ):
+      t,T = LoadThermalProfile( profile, Tb )
+    else:
+      t,T = profile
+
+    SFs[profile] = ComputeThreshold(t,T,A,Ea)
     
 
   return SFs
 
-def ComputeScalingFactorsRSquared(files,Tbs,A,Ea):
-  SFs = ComputeScalingFactors(files,Tbs,A,Ea)
+def ComputeScalingFactorsRSquared(Profiles,Tbs,A,Ea):
+  SFs = ComputeScalingFactors(Profiles,Tbs,A,Ea)
   sum = 0
   for f in SFs:
     sum += (SFs[f] - 1)**2
@@ -100,7 +109,7 @@ def LinearRegressionMethod(config):
   y = list()
   for file in config.files:
     t,T = LoadThermalProfile( file, config.baseline_temperature )
-    i = np.argmax(T)
+    i = np.argmax(T[::-1])
     tau = t[i]
     Tmax = T[i]
 
@@ -185,7 +194,7 @@ def AverageLineIntersectionMethod(config):
 
   return A,Ea
 
-def MinimizeLogAStdDevMethod(config):
+def MinimizeLogAStdDevWithLinearRegressionMethod(config):
   regressions = dict()
   for file in config.files:
     t,T = LoadThermalProfile( file, config.baseline_temperature )
@@ -201,8 +210,8 @@ def MinimizeLogAStdDevMethod(config):
   A = mp.exp(logA)
   return A,Ea
 
-def MinimizeLogAStdDevAndScalingFactorsMethod(config):
-  A,Ea = MinimizeLogAStdDevMethod(config)
+def MinimizeLogAStdDevAndScalingFactorsWithLinearRegressionMethod(config):
+  A,Ea = MinimizeLogAStdDevWithLinearRegressionMethod(config)
   # now find the value for log(A) that minimizes the scaling factor err
   regressions = dict()
   for file in config.files:
@@ -217,6 +226,32 @@ def MinimizeLogAStdDevAndScalingFactorsMethod(config):
 
   A = mp.exp(logA)
   return A,Ea
+
+def MinimizeLogAStdDevAndScalingFactorsMethod(config):
+  profiles = dict()
+  for file in config.files:
+    t,T = LoadThermalProfile( file, config.baseline_temperature )
+    profiles[file] = [t,T]
+
+  # first find Ea that minimized stddev for logA
+  def cost(Ea):
+    logAs = [ ComputeLogA(profiles[f][0],profiles[f][1], Ea) for f in profiles.keys()]
+    return np.std(logAs)
+
+  res = minimize_scalar( cost, bounds=(config.Ea_min,config.Ea_max), method='bounded' )
+  Ea = res.x
+  logAs = [ ComputeLogA(profiles[f][0],profiles[f][1], Ea) for f in profiles.keys()]
+
+  def cost(logA):
+    err = ComputeScalingFactorsRSquared(config.files, config.baseline_temperature, mp.exp(logA), Ea )
+    return err
+
+  res = minimize_scalar( cost, bounds=(min(logAs),max(logAs)), method='bounded' )
+  logA = res.x
+
+  A = mp.exp(logA)
+  return A,Ea
+
 
 def ScanForMinimumScalingFactorsMethod(config):
   regressions = dict()
@@ -255,23 +290,36 @@ def ScanForMinimumScalingFactorsMethod(config):
   return exp(logA),Ea
 
 def MinimizeScalingFactorsMethod(config):
-  regressions = dict()
+  profiles = dict()
   for file in config.files:
     t,T = LoadThermalProfile( file, config.baseline_temperature )
-    regressions[file] = ComputeLogAvsEaLine(t,T,[config.Ea_min,config.Ea_max])
+    profiles[file] = [t,T]
 
-  def logA_ll(x):
-    return mp.log(x[0]) - min([regressions[f]['m']*x[1] + regressions[f]['b'] for f in config.files])
+  class Cost:
+    thermal_profiles = profiles
+    baseline_temperature = config.baseline_temperature
 
-  def logA_ul(x):
-    return max([regressions[f]['m']*x[1] + regressions[f]['b'] for f in config.files]) - mp.log(x[0])
+    def __call__( self, x ):
+      A = x[0]
+      Ea = x[1]
+      err = ComputeScalingFactorsRSquared(self.thermal_profiles, self.baseline_temperature, A, Ea )
+      return err
 
-  def cost(x):
-    err = ComputeScalingFactorsRSquared(config.files, config.baseline_temperature, x[0], x[1] )
-    print ">>>",x,err
-    return err
+  def Process(Ea):
+    logAs = [ ComputeLogA(cost.thermal_profiles[f][0],cost.thermal_profiles[f][1], Ea) for f in cost.thermal_profiles.keys() ]
+    for A in np.logspace(float(min(logAs)), float(max(logAs)), 50):
+      print A, Ea, cost( [A,Ea] )
+  cost = Cost()
 
-  x0 = MinimizeLogAStdDevMethod(config)
+  # pool = Pool(config.num_jobs)
+  # pool.map_async(Process, np.logspace(np.log10(args.Ea_min), np.log10(args.Ea_max), 500)
+
+  for Ea in np.logspace(np.log10(args.Ea_min), np.log10(args.Ea_max), 500):
+    Process(Ea)
+
+
+
+  x0 = MinimizeLogAStdDevWithLinearRegressionMethod(config)
 
   bounds = [ (None,None), (config.Ea_min,config.Ea_max) ]
   constraints = [ { 'type' : 'ineq', 'fun' : logA_ll }
@@ -290,12 +338,29 @@ if __name__ == "__main__":
   parser.add_argument("--Ea-min", type=np.float64, default=1e3, help="minimum Ea value to consider when searching for the best fit.")
   parser.add_argument("--Ea-max", type=np.float64, default=1e7, help="maximum Ea value to consider when searching for the best fit.")
   parser.add_argument("--baseline-temperature","-T0", type=np.float64, default=0,  help="baseline temperature to all to thermal profiles.")
-  parser.add_argument("--methods",default='all', help="list of methods to use.")
+  parser.add_argument("--methods",default='all', help="a list of methods to use.")
+  parser.add_argument("--list-methods",action='store_true', default=False, help="list the available methods and exit.")
   parser.add_argument("--logAvsEa",action='store_true', default=False, help="Calculate logA vs Ea and write it to file..")
   parser.add_argument("--logAvsEa-N", type=int, default=100, help="the number of points to compute log(A) vs Ea at.")
   parser.add_argument("--no-fit",action='store_true',default=False, help="Do not perform an A,Ea fit.")
+  parser.add_argument("--num-jobs",type=int,default=4, help="Number of jobs (processes) to use when doing parallel processing.")
   parser.add_argument("files", metavar="FILE", nargs="*", help="Files containing threshold thermal profile data.")
   args = parser.parse_args() 
+
+  methods = { "constant temperature linear regression" : LinearRegressionMethod
+            , "effective exposure linear regression" : EffectiveExposureMethod
+            , "minimize log(A) standard deviation with linear regression" : MinimizeLogAStdDevWithLinearRegressionMethod
+            , "minimize log(A) standard deviation and scaling factors with linear regression" : MinimizeLogAStdDevAndScalingFactorsWithLinearRegressionMethod
+            # , "average line intersection" : AverageLineIntersectionMethod
+            # , "scan for minimum scaling factors" : ScanForMinimumScalingFactorsMethod
+            # , "minimize scaling factors" : MinimizeScalingFactorsMethod
+            , "minimize log(A) standard deviation and scaling factors" : MinimizeLogAStdDevAndScalingFactorsMethod
+            }
+
+  if args.list_methods:
+    for m in methods:
+      print m
+    sys.exit(0)
 
   if args.logAvsEa:
     N = args.logAvsEa_N
@@ -317,14 +382,6 @@ if __name__ == "__main__":
         
 
   if not args.no_fit:
-    methods = { "constant temperature linear regression" : LinearRegressionMethod
-              , "effective exposure linear regression" : EffectiveExposureMethod
-              , "minimize log(A) standard deviation" : MinimizeLogAStdDevMethod
-              , "minimize log(A) standard deviation and scaling factors" : MinimizeLogAStdDevAndScalingFactorsMethod
-              # , "average line intersection" : AverageLineIntersectionMethod
-              # , "scan for minimum scaling factors" : ScanForMinimumScalingFactorsMethod
-              # , "minimize scaling factors" : MinimizeScalingFactorsMethod
-              }
 
     if args.methods == 'all':
       args.methods = ','.join(methods.keys())
